@@ -1,0 +1,15 @@
+[gd_scene format=3 uid="uid://c8am1ga3o8gew"]
+
+[ext_resource type="Script" uid="uid://btjss1ct4xdu5" path="res://scripts/physics_box.gd" id="1_6gue6"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_6gue6"]
+
+[node name="PhysicsBox" type="RigidBody3D" unique_id=1252272527]
+contact_monitor = true
+max_contacts_reported = 4
+script = ExtResource("1_6gue6")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=298400558]
+shape = SubResource("BoxShape3D_6gue6")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1915996903]

@@ -1,0 +1,21 @@
+[gd_scene format=3 uid="uid://bsd4uhmap7qk4"]
+
+[ext_resource type="PackedScene" uid="uid://c8am1ga3o8gew" path="res://scenes/PhysicsBox.tscn" id="1_0wciy"]
+[ext_resource type="Texture2D" uid="uid://irx8eerrckmg" path="res://assets/textures/texture_02.png" id="2_r6xu2"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_r6xu2"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_erado"]
+albedo_texture = ExtResource("2_r6xu2")
+uv1_triplanar = true
+
+[sub_resource type="BoxMesh" id="BoxMesh_ebjp5"]
+
+[node name="PhysicsBox" unique_id=1252272527 instance=ExtResource("1_0wciy")]
+
+[node name="CollisionShape3D" parent="." index="0" unique_id=298400558]
+shape = SubResource("BoxShape3D_r6xu2")
+
+[node name="MeshInstance3D" parent="." index="1" unique_id=1915996903]
+material_override = SubResource("StandardMaterial3D_erado")
+mesh = SubResource("BoxMesh_ebjp5")
