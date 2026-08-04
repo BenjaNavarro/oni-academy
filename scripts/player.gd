@@ -1,232 +1,475 @@
 extends CharacterBody3D
 
-# --- ESTADÍSTICAS (Próximamente conectaremos el Resource) ---
-@export var speed_base = 5.0
-@export var speed_sprint = 8.0
-@export var crouch_speed = 2.5
-@export var mouse_sensitivity = 0.002
+# --- PERFIL DEL PERSONAJE ---
+@export var profile: CharacterProfile
 
-# --- CONFIGURACIÓN DEL DASH ---
-@export var dash_speed = 25.0       # Velocidad explosiva del dash
-@export var dash_duration = 0.2    # Cuánto dura el impulso (en segundos)
-@export var dash_cooldown_max = 1.0 # Tiempo para volver a usarlo
-@export var double_tap_window = 0.3 # Tiempo máximo entre toques para detectar doble shift
+# --- ESTADÍSTICAS BASE ---
+@export var speed_base = 5.0
+@export var crouch_speed = 2.5
+@export var mouse_sensitivity: float = 0.002
+
+# --- DASH ---
+@export var dash_speed = 25.0
+@export var dash_duration = 0.2
+@export var dash_cooldown_max = 1.0
+@export var double_tap_window = 0.3
+
+# --- SALTO PROTOTYPE ---
+@export var jump_base_force = 4.5
+@export var air_control = 0.3
+@export var long_jump_boost = 10.0
+@export var bunny_hop_boost = 2.0
+@export var push_force = 1.0
+
+# --- BUNNY HOP SYSTEM (UT99 Style) ---
+@export var bhop_enabled: bool = true
+@export var bhop_window_perfect: float = 0.12   # Timing perfecto al aterrizar
+@export var bhop_window_good: float = 0.22      # Timing aceptable
+@export var bhop_speed_increment: float = 1.5   # Cuánto suma cada hop exitoso
+@export var bhop_max_speed: float = 18.0        # Velocidad tope (evita volverse loco)
+@export var bhop_stamina_cost: float = 12.0     # Stamina consumida por hop
+@export var bhop_momentum_decay: float = 4.0    # Pérdida de velocidad extra por segundo en suelo
+@export var bhop_min_chain_for_boost: int = 2   # Saltos seguidos necesarios para sentir el boost
+
+# --- STAMINA ---
+@export var max_stamina: float = 100.0
+@export var stamina_recover_rate: float = 8.0   # Por segundo
+@export var stamina_recover_delay: float = 1.0  # Segundos tras dejar de gastar
 
 # --- NODOS ---
 @onready var collision_shape = $CollisionShape3D
 @onready var visuals = $visuals
 @onready var camera_mount = $camera_mount
 
-@export var jump_base_force = 4.5
-@export var air_control = 0.3
-@export var long_jump_boost = 10.0  # Fuerza horizontal del salto largo
-@export var bunny_hop_boost = 2.0   # Pequeño empujón al encadenar saltos
-@export var push_force = 1.0 # Ajusta este valor para empujar más fuerte o más suave
-
-var jump_charge = 0.0
-var jump_cooldown = 0.0
-var max_jump_charge = 1.0 # 1.0 extra (doble de salto)
-var is_charging = false
-
 # --- VARIABLES DE ESTADO ---
-var is_sprinting = false
 var is_crouching = false
 var default_height = 2.0
 var crouch_height = 1.0
 
-var dash_timer = 0.0          # Cronómetro de la duración del dash
-var dash_cooldown = 0.0       # Cronómetro del enfriamiento
-var last_sprint_tap = 0.0     # Cuándo fue la última vez que tocamos Shift
+var dash_timer = 0.0
+var dash_cooldown = 0.0
+var last_sprint_tap = 0.0
 var is_dashing = false
+
+# Salto Prototype
+var jump_charge = 0.0
+var max_jump_charge = 1.0
+var is_charging = false
+var jump_cooldown = 0.0
+
+# Bunny Hop
+var bhop_speed_bonus: float = 0.0           # Velocidad extra acumulada
+var bhop_chain_count: int = 0               # Cuántos hops llevamos seguidos
+var time_since_landed: float = 0.0          # Cronómetro desde que tocamos suelo
+var was_in_air: bool = false                # Para detectar aterrizaje
+var bhop_window_active: bool = false        # Estamos en la ventana de timing
+var last_bhop_time: float = 0.0             # Para evitar spam
+
+# Stamina
+var stamina: float = 100.0
+var stamina_recover_timer: float = 0.0
+
+# Crouch Jump
+var is_crouch_jumping = false
+var wants_uncrouch = false
+@export var crouch_jump_boost = 2.5
+@export var uncrouch_check_distance = 2.1
 
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	default_height = collision_shape.shape.height
+	if profile:
+		speed_base = profile.walk_speed
+		max_stamina = profile.max_stamina if "max_stamina" in profile else 100.0
+		stamina = max_stamina
 
 func _input(event):
-	# Rotación de cámara tipo Jedi Academy/Warzone
+	# Cámara
 	if event is InputEventMouseMotion:
-		rotate_y(-event.relative.x * mouse_sensitivity) # Gira el cuerpo (Eje Y)
-		camera_mount.rotate_x(-event.relative.y * mouse_sensitivity) # Gira la cámara (Eje X)
-		camera_mount.rotation.x = clamp(camera_mount.rotation.x, -1.2, 1.2) # Límite de mirada
-		
-	# DASH: Usamos event.is_action_pressed para detectar el clic inicial
+		rotate_y(-event.relative.x * mouse_sensitivity)
+		camera_mount.rotate_x(-event.relative.y * mouse_sensitivity)
+		camera_mount.rotation.x = clamp(camera_mount.rotation.x, -1.2, 1.2)
+	
+	# Dash (doble Shift)
 	if event.is_action_pressed("sprint"):
 		var current_time = Time.get_ticks_msec() / 1000.0
-		
 		if current_time - last_sprint_tap < double_tap_window and dash_cooldown <= 0:
 			start_dash()
-		
 		last_sprint_tap = current_time
+	
+	# Crouch (mantener, estilo Source)
+	if event.is_action_pressed("crouch"):
+		is_crouching = true
+		apply_crouch(true)
+	elif event.is_action_released("crouch"):
+		if can_uncrouch():
+			is_crouching = false
+			apply_crouch(false)
+		else:
+			wants_uncrouch = true
+	
+	# --- BUNNY HOP: Detectar pulsación de salto ---
+	if event.is_action_pressed("jump"):
+		try_bunny_hop()
 
 func _physics_process(delta):
-	# Reducir cronómetros
-	if dash_timer > 0: 
-		dash_timer -= delta
-	else: 
-		is_dashing = false
+	# Timers
+	if dash_timer > 0: dash_timer -= delta
+	else: is_dashing = false
+	if dash_cooldown > 0: dash_cooldown -= delta
+	if jump_cooldown > 0: jump_cooldown -= delta
 	
-	if dash_cooldown > 0: 
-		dash_cooldown -= delta
-
-	# 1. GRAVEDAD
+	# Stamina recovery
+	if stamina_recover_timer > 0:
+		stamina_recover_timer -= delta
+	else:
+		stamina = min(stamina + stamina_recover_rate * delta, max_stamina)
+	
+	# Gravedad
 	if not is_on_floor():
 		velocity += get_gravity() * delta
-
-	# 2. PROCESAR ESTADOS (¡Esto es lo que faltaba!)
-	handle_states()
-
-	# 3. PROCESAR SALTO
-	handle_jump_logic(delta)
-
-	# 4. PROCESAR MOVIMIENTO
-	if not is_dashing:
-		handle_movement_logic(delta)
-
-	# 5. EJECUTAR FÍSICAS
+	
+	# Detectar aterrizaje para ventana de Bunny Hop
+	handle_landing_detection(delta)
+	
+	# Si queríamos levantarnos y ahora hay espacio
+	if wants_uncrouch and is_crouching and can_uncrouch():
+		is_crouching = false
+		wants_uncrouch = false
+		apply_crouch(false)
+		if not is_on_floor() and is_crouch_jumping:
+			velocity.y += crouch_jump_boost
+			is_crouch_jumping = false
+	
+	# Estados y movimiento
+	handle_states(delta)
+	handle_jump_charge(delta)
+	handle_movement_logic(delta)
+	
+	# Físicas
 	move_and_slide()
-	
-	# 6. EMPUJAR OBJETOS (¡Añade esto!)
 	handle_box_pushing()
+	handle_landing_effects()
 
-func handle_states():
-	# Sprint frontal
-	is_sprinting = Input.is_action_pressed("sprint") and Input.is_action_pressed("move_forward") and not is_crouching
-	
-	# Agachado (Crouch)
-	if Input.is_action_just_pressed("crouch"):
-		is_crouching = !is_crouching
-		toggle_crouch_logic()
+# =============================================================================
+# BUNNY HOP SYSTEM
+# =============================================================================
 
-func toggle_crouch_logic():
-	var tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE)
+func handle_landing_detection(delta):
+	# Detectar transición AIRE → SUELO
+	var is_in_air = not is_on_floor()
 	
-	if is_crouching:
-		# En lugar de mover el nodo, solo encogemos la forma
-		# y ajustamos la posición de visuales y cámara
-		tween.tween_property(collision_shape.shape, "height", crouch_height, 0.1)
-		# Bajamos la posición de la colisión para que los pies se queden en el suelo (y=0.5 si la altura es 1)
-		tween.tween_property(collision_shape, "position:y", 0.5, 0.1) 
-		tween.tween_property(camera_mount, "position:y", 0.8, 0.1)
+	if was_in_air and not is_in_air:
+		# Acabamos de aterrizar → Abrir ventana de Bunny Hop
+		time_since_landed = 0.0
+		bhop_window_active = true
+	
+	if is_on_floor():
+		time_since_landed += delta
+		
+		# La ventana se cierra después del timing "good"
+		if time_since_landed > bhop_window_good:
+			bhop_window_active = false
+			
+			# Si estamos en el suelo y no hacemos bhop, perdemos momentum
+			if bhop_speed_bonus > 0:
+				bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta)
+				if bhop_speed_bonus < 0.5:
+					bhop_speed_bonus = 0.0
+					bhop_chain_count = 0
+	
+	was_in_air = is_in_air
+
+func try_bunny_hop():
+	# Bunny Hop requiere: Shift presionado + timing correcto + stamina + no agachado
+	var is_sprint_held = Input.is_action_pressed("sprint")
+	
+	if not bhop_enabled or is_crouching or not is_sprint_held:
+		# No intentamos bhop, salto normal/carga
+		handle_normal_jump_start()
+		return
+	
+	if stamina < bhop_stamina_cost:
+		# Sin stamina: salto normal sin boost
+		handle_normal_jump_start()
+		return
+	
+	# Evaluar timing
+	var timing = get_bhop_timing()
+	
+	if timing == "perfect" or timing == "good":
+		# ¡BUNNY HOP EXITOSO!
+		execute_bunny_hop(timing)
 	else:
-		# Para levantarse, primero verificamos si hay algo arriba (opcional pero recomendado)
-		tween.tween_property(collision_shape.shape, "height", default_height, 0.1)
-		tween.tween_property(collision_shape, "position:y", 1.0, 0.1) # Centro a 1.0 si altura es 2.0
-		tween.tween_property(camera_mount, "position:y", 1.5, 0.1)
+		# Timing fallido: salto normal, rompemos cadena
+		bhop_speed_bonus = 0.0
+		bhop_chain_count = 0
+		handle_normal_jump_start()
+
+func get_bhop_timing() -> String:
+	if not bhop_window_active:
+		return "miss"
+	if time_since_landed <= bhop_window_perfect:
+		return "perfect"
+	if time_since_landed <= bhop_window_good:
+		return "good"
+	return "miss"
+
+func execute_bunny_hop(timing: String):
+	stamina -= bhop_stamina_cost
+	stamina_recover_timer = stamina_recover_delay
+	
+	# La cadena de saltos SIEMPRE aumenta si el timing fue bueno
+	bhop_chain_count += 1
+	
+	# --- BONUS DE VELOCIDAD: solo hacia adelante ---
+	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	var forward_amount = -input_dir.y  # 1.0 = adelante puro, -1.0 = atrás, 0.0 = lateral
+	
+	var boost = bhop_speed_increment
+	if timing == "perfect":
+		boost *= 1.5
+	
+	var bonus_to_add = 0.0
+	
+	if forward_amount > 0.7:
+		# Adelante puro: acumula boost completo
+		bonus_to_add = boost
+	elif forward_amount > 0.3:
+		# Diagonal adelante: acumula solo 40%
+		bonus_to_add = boost * 0.4
+	else:
+		# Lateral o atrás: NO acumula bonus nuevo
+		bonus_to_add = 0.0
+		# Y pierde el bonus acumulado (es un sprint, no un dash omnidireccional)
+		bhop_speed_bonus = 0.0
+	
+	# Aplicar límite
+	if bonus_to_add > 0:
+		bhop_speed_bonus = min(bhop_speed_bonus + bonus_to_add, bhop_max_speed - speed_base)
+	
+	# El impulso del salto siempre es hacia adelante del personaje
+	var forward_dir = -transform.basis.z
+	var target_speed = speed_base + bhop_speed_bonus
+	
+	velocity.x = forward_dir.x * target_speed
+	velocity.z = forward_dir.z * target_speed
+	velocity.y = jump_base_force * 0.85
+	
+	play_bhop_feedback(timing)
+	is_crouch_jumping = false
+
+func play_bhop_feedback(timing: String):
+	# Referencia segura a la cámara (usamos la ruta correcta)
+	var cam = $camera_mount/Camera3D
+	
+	if timing == "perfect" and cam != null:
+		var fov_tween = create_tween()
+		fov_tween.tween_property(cam, "fov", 85 + (bhop_chain_count * 2), 0.1)
+		fov_tween.tween_property(cam, "fov", 75, 0.3)
+	
+	# Visual: pequeño impulso de cámara hacia abajo (feel de "rebote")
+	if camera_mount != null:
+		var cam_bump = create_tween()
+		var start_y = camera_mount.position.y
+		var target_y = 1.5 if not is_crouching else 0.8
+		
+		cam_bump.tween_property(camera_mount, "position:y", start_y - 0.1, 0.05)
+		cam_bump.tween_property(camera_mount, "position:y", target_y, 0.1)
+	
+	# Visual: pequeño impulso de cámara hacia abajo (feel de "rebote")
+	var cam_bump = create_tween()
+	cam_bump.tween_property(camera_mount, "position:y", camera_mount.position.y - 0.1, 0.05)
+	cam_bump.tween_property(camera_mount, "position:y", 1.5 if not is_crouching else 0.8, 0.1)
+
+# =============================================================================
+# SALTO NORMAL / CARGA (Prototype)
+# =============================================================================
+
+func handle_normal_jump_start():
+	# Si estamos en el suelo, iniciar carga (Prototype)
+	if is_on_floor():
+		if is_crouching:
+			# Crouch Jump: saltar agachado
+			is_crouch_jumping = true
+			velocity.y = jump_base_force * 0.9
+			return
+		
+		is_charging = true
+		jump_charge = 0.0
+		# Visual: agacharse al cargar
+		var charge_tween = create_tween()
+		charge_tween.tween_property(visuals, "position:y", -0.15, 0.1)
+
+func handle_jump_charge(delta):
+	if not is_charging:
+		return
+	
+	if is_on_floor() and Input.is_action_pressed("jump"):
+		jump_charge += delta * 1.5
+		jump_charge = min(jump_charge, max_jump_charge)
+	elif Input.is_action_just_released("jump") and is_charging:
+		release_jump_charge()
+	else:
+		# Si se cancela (ej: caída, stun)
+		is_charging = false
+		jump_charge = 0.0
+		var reset_tween = create_tween()
+		reset_tween.tween_property(visuals, "position:y", 0.0, 0.1)
+
+func release_jump_charge():
+	is_charging = false
+	var charge_ratio = jump_charge / max_jump_charge
+	
+	# Calcular fuerza
+	var force = jump_base_force + (charge_ratio * 3.0)
+	
+	# Long jump (si el perfil lo permite)
+	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	var is_moving_forward = input_dir.y < -0.5
+	
+	if profile and profile.can_long_jump and is_moving_forward and charge_ratio > 0.5:
+		var horizontal = profile.long_jump_force * charge_ratio
+		var h_vel = Vector3(velocity.x, 0, velocity.z)
+		h_vel += -transform.basis.z * horizontal
+		h_vel = h_vel.limit_length(speed_base * 2.5)
+		velocity.x = h_vel.x
+		velocity.z = h_vel.z
+		velocity.y = force * 0.6
+	else:
+		velocity.y = force
+	
+	jump_charge = 0.0
+	var reset_tween = create_tween()
+	reset_tween.tween_property(visuals, "position:y", 0.0, 0.1)
+
+# =============================================================================
+# MOVIMIENTO
+# =============================================================================
+
+func handle_states(delta):
+	# Sprint "clásico" solo si no estamos en bunny hop
+	# (El bhop reemplaza al sprint normal)
+	if bhop_speed_bonus <= 0 and not is_crouching:
+		# Sprint simple manteniendo Shift + adelante (para movimiento base)
+		pass  # Opcional: mantener sprint clásico para no-bhop
 
 func handle_movement_logic(delta):
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	
+	# --- PENALIZACIÓN DE BONUS POR DIRECCIÓN (en el aire o en suelo) ---
+	if bhop_speed_bonus > 0:
+		var forward_amount = -input_dir.y
+		
+		if forward_amount < -0.2:
+			# Atrás: eliminar bonus rápido
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
+			if bhop_speed_bonus < 0.5:
+				bhop_speed_bonus = 0.0
+		elif forward_amount < 0.3:
+			# Lateral puro: eliminar bonus rápido
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
+			if bhop_speed_bonus < 0.5:
+				bhop_speed_bonus = 0.0
+		elif forward_amount < 0.7:
+			# Diagonal: reducir gradualmente (mantiene ~60% del bonus actual)
+			var target_bonus = bhop_speed_bonus * 0.6
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * 2.0)
+		# Si forward_amount >= 0.7: no hace nada, mantiene el bonus
+	
+	# --- BHOP: En el aire, momentum hacia adelante ---
+	if bhop_speed_bonus > 0 and not is_on_floor():
+		var forward_dir = -transform.basis.z
+		var target_speed = speed_base + bhop_speed_bonus
+		
+		velocity.x = forward_dir.x * target_speed
+		velocity.z = forward_dir.z * target_speed
+		
+		# Air strafe muy suave (solo ajuste ligero)
+		if direction:
+			var current_h = Vector3(velocity.x, 0, velocity.z).length()
+			var wish_dir = direction * current_h
+			velocity.x = lerp(velocity.x, wish_dir.x, air_control * delta * 2.0)
+			velocity.z = lerp(velocity.z, wish_dir.z, air_control * delta * 2.0)
+		return
+	
+	# --- RESTO DE TU CÓDIGO (sin cambios) ---
 	var current_speed = speed_base
-	if is_sprinting: current_speed = speed_sprint
-	if is_crouching: current_speed = crouch_speed
-
+	if is_crouching:
+		current_speed = crouch_speed
+	
 	if is_on_floor():
-		# En el suelo el control es total
 		if direction:
 			velocity.x = direction.x * current_speed
 			velocity.z = direction.z * current_speed
 		else:
-			velocity.x = move_toward(velocity.x, 0, current_speed)
-			velocity.z = move_toward(velocity.z, 0, current_speed)
+			velocity.x = move_toward(velocity.x, 0, current_speed * 2.0 * delta)
+			velocity.z = move_toward(velocity.z, 0, current_speed * 2.0 * delta)
 	else:
-		# EN EL AIRE (Jedi Academy): No sobrescribimos velocity, la influenciamos suavemente
 		if direction:
-			# El lerp permite que mantengas la inercia pero corrijas un poco
 			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * 5.0)
 			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * 5.0)
-		
-	if is_sprinting:
-		# Si el input es hacia adelante (y < 0 en get_vector), permitimos velocidad máxima
-		if input_dir.y < -0.5: 
-			current_speed = speed_sprint
-		else:
-			# Penalización por correr de lado o atrás (ej: 70% del sprint)
-			current_speed = speed_sprint * 0.7
 
-func handle_jump_logic(delta):
-	# Reducimos el cooldown cada frame
-	if jump_cooldown > 0:
-		jump_cooldown -= delta
-
-	if is_on_floor():
-		# Lógica existente: Levantarse al saltar si estás agachado
-		if Input.is_action_just_pressed("jump") and is_crouching:
-			is_crouching = false
-			toggle_crouch_logic()
-
-		# --- FASE DE CARGA ---
-		if Input.is_action_pressed("jump"):
-			is_charging = true
-			jump_charge = move_toward(jump_charge, max_jump_charge, delta * 1.5)
-		
-		# --- FASE DE LANZAMIENTO (Al soltar Espacio) ---
-		if Input.is_action_just_released("jump") and is_charging:
-			# Detectamos si el jugador está pulsando "adelante" (W o Joystick arriba)
-			var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-			var is_moving_forward = input_dir.y < -0.5 # -1 es hacia adelante puro
-			
-			# Caso 1: SALTO LARGO (Sprint + Carga alta + Adelante + Sin Cooldown)
-			if is_sprinting and is_moving_forward and jump_charge > 0.5 and jump_cooldown <= 0:
-				# Impulso horizontal fuerte basado en la carga
-				var horizontal_force = long_jump_boost * jump_charge
-				velocity += -transform.basis.z * horizontal_force
-				
-				# Salto vertical más bajo (salto parabólico)
-				velocity.y = jump_base_force * 0.7 
-				jump_cooldown = 1.2 # Penalización de tiempo por el esfuerzo
-				
-			# Caso 2: BUNNY HOP (Sprint + Carga mínima + Adelante)
-			elif is_sprinting and is_moving_forward and jump_charge < 0.2:
-				velocity.y = jump_base_force
-				# Pequeño boost de inercia acumulativo
-				velocity += -transform.basis.z * bunny_hop_boost
-				
-			# Caso 3: SALTO NORMAL / PROTOTYPE (Cualquier otra dirección o sin sprint)
-			else:
-				var total_jump = jump_base_force + (jump_charge * 1.5)
-				velocity.y = total_jump
-			
-			# Reset de estado
-			is_charging = false
-			jump_charge = 0.0
-			
-	else:
-		# En el aire cancelamos la carga para evitar bugs
-		is_charging = false
-
-func handle_box_pushing():
-	# Revisamos colisiones después del move_and_slide
-	for i in get_slide_collision_count():
-		var collision = get_slide_collision(i)
-		var collider = collision.get_collider()
-		
-		# Si es una de tus cajas RigidBody3D
-		if collider is RigidBody3D:
-			# Empujamos en dirección opuesta al choque
-			var direction = -collision.get_normal()
-			
-			# Calculamos la fuerza (nuestra velocidad + la fuerza base)
-			# Dividimos por la masa para que la de 50kg sea más difícil de mover
-			var impulse = direction * push_force * velocity.length()
-			
-			# Aplicamos el impulso en la posición del choque para que pueda rotar
-			collider.apply_impulse(impulse, collision.get_position() - collider.global_position)
-			
+# =============================================================================
+# DASH
+# =============================================================================
 func start_dash():
 	is_dashing = true
 	dash_timer = dash_duration
 	dash_cooldown = dash_cooldown_max
 	
-	# Obtenemos la dirección actual o vamos hacia adelante si no hay input
+	# Romper bunny hop al dashear
+	bhop_speed_bonus = 0.0
+	bhop_chain_count = 0
+	
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
-	
 	if dir == Vector3.ZERO:
-		dir = -transform.basis.z # Hacia adelante por defecto
+		dir = -transform.basis.z
 	
-	# Aplicamos la velocidad de golpe
 	velocity.x = dir.x * dash_speed
 	velocity.z = dir.z * dash_speed
-	velocity.y = 0 # Opcional: Descomenta esto si quieres que el dash sea puramente horizontal
+	if is_on_floor():
+		velocity.y = 0
+
+# =============================================================================
+# CROUCH & CROUCH JUMP
+# =============================================================================
+
+func apply_crouch(crouched: bool):
+	var target_height = crouch_height if crouched else default_height
+	var target_pos = 0.5 if crouched else 1.0
+	var cam_y = 0.8 if crouched else 1.5
+	
+	var tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE)
+	tween.tween_property(collision_shape.shape, "height", target_height, 0.1)
+	tween.tween_property(collision_shape, "position:y", target_pos, 0.1)
+	tween.tween_property(camera_mount, "position:y", cam_y, 0.1)
+
+func can_uncrouch() -> bool:
+	var space_state = get_world_3d().direct_space_state
+	var query = PhysicsRayQueryParameters3D.new()
+	query.from = global_position
+	query.to = global_position + Vector3.UP * uncrouch_check_distance
+	query.exclude = [self]
+	query.collision_mask = 1
+	var result = space_state.intersect_ray(query)
+	return result.is_empty()
+
+# =============================================================================
+# FÍSICAS & EFECTOS
+# =============================================================================
+
+func handle_box_pushing():
+	for i in get_slide_collision_count():
+		var collision = get_slide_collision(i)
+		var collider = collision.get_collider()
+		if collider is RigidBody3D:
+			var direction = -collision.get_normal()
+			var impulse = direction * push_force * velocity.length()
+			collider.apply_impulse(impulse, collision.get_position() - collider.global_position)
+
+func handle_landing_effects():
+	# Efectos de aterrizaje (cámara, partículas)
+	pass

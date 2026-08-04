@@ -2,6 +2,7 @@
 
 [ext_resource type="PackedScene" uid="uid://bn6ebifkfg2nk" path="res://assets/models/mixamo_base.glb" id="1_3vyb7"]
 [ext_resource type="Script" uid="uid://bk8k2icuoioc6" path="res://scripts/player.gd" id="1_g2els"]
+[ext_resource type="Script" uid="uid://bbx2xd2nmikr" path="res://scripts/bhop_debugger.gd" id="3_qhqgy"]
 
 [sub_resource type="CylinderShape3D" id="CylinderShape3D_g2els"]
 
@@ -11,7 +12,6 @@
 transform = Transform3D(2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0)
 script = ExtResource("1_g2els")
 speed_base = 2.5
-speed_sprint = 4.0
 crouch_speed = 1.25
 jump_base_force = 2.25
 air_control = 0.1
@@ -37,5 +37,57 @@ current = true
 root_node = NodePath("../visuals/mixamo_base")
 tree_root = SubResource("AnimationNodeStateMachine_g2els")
 anim_player = NodePath("../visuals/mixamo_base/AnimationPlayer")
+
+[node name="BhopDebugger" type="CanvasLayer" parent="." unique_id=2132536900]
+script = ExtResource("3_qhqgy")
+
+[node name="PanelContainer" type="PanelContainer" parent="BhopDebugger" unique_id=1592912500]
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="MarginContainer" type="MarginContainer" parent="BhopDebugger/PanelContainer" unique_id=252877813]
+layout_mode = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="BhopDebugger/PanelContainer/MarginContainer" unique_id=1098812113]
+layout_mode = 2
+
+[node name="TimingBar" type="ProgressBar" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=1365869547]
+layout_mode = 2
+step = 0.1
+
+[node name="TimingLabel" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=1366569889]
+layout_mode = 2
+
+[node name="ResultLabel" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=701536910]
+layout_mode = 2
+
+[node name="HBoxContainer" type="HBoxContainer" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=657934079]
+layout_mode = 2
+
+[node name="SpeedLabel" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer" unique_id=1432379062]
+layout_mode = 2
+
+[node name="StaminaBar" type="ProgressBar" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer" unique_id=914303645]
+layout_mode = 2
+show_percentage = false
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=813913202]
+layout_mode = 2
+
+[node name="StateAir" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer2" unique_id=1836765931]
+layout_mode = 2
+text = "AIR"
+
+[node name="StateGround" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer2" unique_id=449793095]
+layout_mode = 2
+text = "GND"
+
+[node name="StateWindow" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer2" unique_id=773566368]
+layout_mode = 2
+text = "WIN"
+
+[node name="StateBhop" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer2" unique_id=634669863]
+layout_mode = 2
+text = "BHOP"
 
 [editable path="visuals/mixamo_base"]
