@@ -4,7 +4,8 @@ extends CharacterBody3D
 @export var profile: CharacterProfile
 
 # --- ESTADÍSTICAS BASE ---
-@export var speed_base = 5.0
+@export var speed_base = 4.0
+@export var speed_run = 6.0
 @export var crouch_speed = 2.5
 @export var mouse_sensitivity: float = 0.002
 
@@ -216,47 +217,54 @@ func get_bhop_timing() -> String:
 	return "miss"
 
 func execute_bunny_hop(timing: String):
+	# Consumir stamina
 	stamina -= bhop_stamina_cost
 	stamina_recover_timer = stamina_recover_delay
 	
-	# La cadena de saltos SIEMPRE aumenta si el timing fue bueno
+	# La cadena SIEMPRE sube si el timing fue bueno
 	bhop_chain_count += 1
 	
 	# --- BONUS DE VELOCIDAD: solo hacia adelante ---
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	var forward_amount = -input_dir.y  # 1.0 = adelante puro, -1.0 = atrás, 0.0 = lateral
+	var forward_amount = -input_dir.y
 	
 	var boost = bhop_speed_increment
 	if timing == "perfect":
 		boost *= 1.5
 	
 	var bonus_to_add = 0.0
+	var had_bonus_before = bhop_speed_bonus > 0  # Guardamos si teníamos bonus antes
 	
 	if forward_amount > 0.7:
-		# Adelante puro: acumula boost completo
 		bonus_to_add = boost
 	elif forward_amount > 0.3:
-		# Diagonal adelante: acumula solo 40%
 		bonus_to_add = boost * 0.4
 	else:
-		# Lateral o atrás: NO acumula bonus nuevo
+		# Lateral o atrás: resetear bonus
 		bonus_to_add = 0.0
-		# Y pierde el bonus acumulado (es un sprint, no un dash omnidireccional)
 		bhop_speed_bonus = 0.0
 	
-	# Aplicar límite
 	if bonus_to_add > 0:
 		bhop_speed_bonus = min(bhop_speed_bonus + bonus_to_add, bhop_max_speed - speed_base)
 	
-	# El impulso del salto siempre es hacia adelante del personaje
-	var forward_dir = -transform.basis.z
-	var target_speed = speed_base + bhop_speed_bonus
+	# --- DIRECCIÓN DEL SALTO ---
+	var move_dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+	if move_dir == Vector3.ZERO:
+		move_dir = -transform.basis.z
 	
-	velocity.x = forward_dir.x * target_speed
-	velocity.z = forward_dir.z * target_speed
+	var target_speed = speed_base
+	if forward_amount > 0.3:
+		target_speed += bhop_speed_bonus
+	
+	velocity.x = move_dir.x * target_speed
+	velocity.z = move_dir.z * target_speed
 	velocity.y = jump_base_force * 0.85
 	
-	play_bhop_feedback(timing)
+	# --- FEEDBACK: solo si hay bonus real ---
+	# Si acumulamos bonus nuevo O ya teníamos bonus y seguimos yendo adelante/diagonal
+	if bonus_to_add > 0 or (had_bonus_before and forward_amount > 0.3):
+		play_bhop_feedback(timing)
+	
 	is_crouch_jumping = false
 
 func play_bhop_feedback(timing: String):
@@ -357,11 +365,10 @@ func handle_states(delta):
 func handle_movement_logic(delta):
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+	var forward_amount = -input_dir.y
 	
-	# --- PENALIZACIÓN DE BONUS POR DIRECCIÓN (en el aire o en suelo) ---
+	# --- PENALIZACIÓN DE BONUS POR DIRECCIÓN (suelo o aire) ---
 	if bhop_speed_bonus > 0:
-		var forward_amount = -input_dir.y
-		
 		if forward_amount < -0.2:
 			# Atrás: eliminar bonus rápido
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
@@ -373,31 +380,32 @@ func handle_movement_logic(delta):
 			if bhop_speed_bonus < 0.5:
 				bhop_speed_bonus = 0.0
 		elif forward_amount < 0.7:
-			# Diagonal: reducir gradualmente (mantiene ~60% del bonus actual)
+			# Diagonal: reducir gradualmente
 			var target_bonus = bhop_speed_bonus * 0.6
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * 2.0)
-		# Si forward_amount >= 0.7: no hace nada, mantiene el bonus
 	
-	# --- BHOP: En el aire, momentum hacia adelante ---
+	# --- BHOP EN EL AIRE: respetar dirección del input ---
 	if bhop_speed_bonus > 0 and not is_on_floor():
-		var forward_dir = -transform.basis.z
-		var target_speed = speed_base + bhop_speed_bonus
+		var target_speed = speed_base
+		if forward_amount > 0.3:
+			target_speed += bhop_speed_bonus
 		
-		velocity.x = forward_dir.x * target_speed
-		velocity.z = forward_dir.z * target_speed
-		
-		# Air strafe muy suave (solo ajuste ligero)
-		if direction:
-			var current_h = Vector3(velocity.x, 0, velocity.z).length()
-			var wish_dir = direction * current_h
-			velocity.x = lerp(velocity.x, wish_dir.x, air_control * delta * 2.0)
-			velocity.z = lerp(velocity.z, wish_dir.z, air_control * delta * 2.0)
+		if direction != Vector3.ZERO:
+			velocity.x = direction.x * target_speed
+			velocity.z = direction.z * target_speed
+		else:
+			velocity.x = move_toward(velocity.x, 0, bhop_momentum_decay * delta)
+			velocity.z = move_toward(velocity.z, 0, bhop_momentum_decay * delta)
 		return
 	
-	# --- RESTO DE TU CÓDIGO (sin cambios) ---
+	# --- MOVIMIENTO NORMAL (suelo o sin bhop) ---
 	var current_speed = speed_base
+	
 	if is_crouching:
 		current_speed = crouch_speed
+	elif Input.is_action_pressed("sprint") and is_on_floor():
+		# Sprint clásico: Shift + moverse en el suelo
+		current_speed = speed_run
 	
 	if is_on_floor():
 		if direction:
@@ -407,10 +415,11 @@ func handle_movement_logic(delta):
 			velocity.x = move_toward(velocity.x, 0, current_speed * 2.0 * delta)
 			velocity.z = move_toward(velocity.z, 0, current_speed * 2.0 * delta)
 	else:
+		# Air control normal
 		if direction:
 			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * 5.0)
 			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * 5.0)
-
+			
 # =============================================================================
 # DASH
 # =============================================================================
