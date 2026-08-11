@@ -11,11 +11,6 @@
 [node name="Player" type="CharacterBody3D" unique_id=2073427431]
 transform = Transform3D(2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0)
 script = ExtResource("1_g2els")
-speed_base = 2.5
-crouch_speed = 1.25
-jump_base_force = 2.25
-air_control = 0.1
-long_jump_boost = 5.0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1264598245]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
@@ -89,5 +84,8 @@ text = "WIN"
 [node name="StateBhop" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer2" unique_id=634669863]
 layout_mode = 2
 text = "BHOP"
+
+[node name="RealSpeedLabel" type="Label" parent="BhopDebugger/PanelContainer/MarginContainer/VBoxContainer" unique_id=1002697169]
+layout_mode = 2
 
 [editable path="visuals/mixamo_base"]

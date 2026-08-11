@@ -4,9 +4,9 @@ extends CharacterBody3D
 @export var profile: CharacterProfile
 
 # --- ESTADÍSTICAS BASE ---
-@export var speed_base = 4.0
-@export var speed_run = 6.0
-@export var crouch_speed = 2.5
+@export var speed_base = 2.5
+@export var speed_run = 5.0
+@export var crouch_speed = 1.5
 @export var mouse_sensitivity: float = 0.002
 
 # --- DASH ---
@@ -16,9 +16,9 @@ extends CharacterBody3D
 @export var double_tap_window = 0.3
 
 # --- SALTO PROTOTYPE ---
-@export var jump_base_force = 4.5
+@export var jump_base_force = 2.5
 @export var air_control = 0.3
-@export var long_jump_boost = 10.0
+@export var long_jump_boost = 5.0
 @export var bunny_hop_boost = 2.0
 @export var push_force = 1.0
 
@@ -79,8 +79,17 @@ var wants_uncrouch = false
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	default_height = collision_shape.shape.height
+	
+	# DEBUG: Ver qué valores tiene REALMENTE al iniciar
+	print("=== VALORES INICIALES ===")
+	print("speed_base (script): ", speed_base)
+	print("speed_run (script): ", speed_run)
+	print("crouch_speed: ", crouch_speed)
+	print("=========================")
+	
 	if profile:
 		speed_base = profile.walk_speed
+		print("PROFILE ACTIVO: walk_speed = ", profile.walk_speed)
 		max_stamina = profile.max_stamina if "max_stamina" in profile else 100.0
 		stamina = max_stamina
 
@@ -367,24 +376,21 @@ func handle_movement_logic(delta):
 	var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	var forward_amount = -input_dir.y
 	
-	# --- PENALIZACIÓN DE BONUS POR DIRECCIÓN (suelo o aire) ---
+	# --- PENALIZACIÓN DE BONUS BHOP ---
 	if bhop_speed_bonus > 0:
 		if forward_amount < -0.2:
-			# Atrás: eliminar bonus rápido
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
 			if bhop_speed_bonus < 0.5:
 				bhop_speed_bonus = 0.0
 		elif forward_amount < 0.3:
-			# Lateral puro: eliminar bonus rápido
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
 			if bhop_speed_bonus < 0.5:
 				bhop_speed_bonus = 0.0
 		elif forward_amount < 0.7:
-			# Diagonal: reducir gradualmente
 			var target_bonus = bhop_speed_bonus * 0.6
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * 2.0)
 	
-	# --- BHOP EN EL AIRE: respetar dirección del input ---
+	# --- BHOP EN EL AIRE ---
 	if bhop_speed_bonus > 0 and not is_on_floor():
 		var target_speed = speed_base
 		if forward_amount > 0.3:
@@ -398,13 +404,12 @@ func handle_movement_logic(delta):
 			velocity.z = move_toward(velocity.z, 0, bhop_momentum_decay * delta)
 		return
 	
-	# --- MOVIMIENTO NORMAL (suelo o sin bhop) ---
+	# --- MOVIMIENTO EN EL SUELO ---
 	var current_speed = speed_base
 	
 	if is_crouching:
 		current_speed = crouch_speed
 	elif Input.is_action_pressed("sprint") and is_on_floor():
-		# Sprint clásico: Shift + moverse en el suelo
 		current_speed = speed_run
 	
 	if is_on_floor():
@@ -419,7 +424,6 @@ func handle_movement_logic(delta):
 		if direction:
 			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * 5.0)
 			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * 5.0)
-			
 # =============================================================================
 # DASH
 # =============================================================================
@@ -474,11 +478,37 @@ func handle_box_pushing():
 	for i in get_slide_collision_count():
 		var collision = get_slide_collision(i)
 		var collider = collision.get_collider()
+		
 		if collider is RigidBody3D:
+			# 1. Solo empujar con velocidad horizontal (ignorar caídas verticales)
+			var horizontal_vel = Vector3(velocity.x, 0, velocity.z)
+			var speed = horizontal_vel.length()
+			
+			# 2. Si no hay movimiento horizontal, no empujar
+			if speed < 0.5:
+				continue
+			
+			# 3. Dirección del empuje: la normal de la colisión
 			var direction = -collision.get_normal()
-			var impulse = direction * push_force * velocity.length()
-			collider.apply_impulse(impulse, collision.get_position() - collider.global_position)
+			
+			# 4. Factor de masa: cajas ligeras reciben menos impulso bruto
+			# (evita que una caja de 1kg se vaya al infinito)
+			var mass = collider.mass
+			var mass_factor = clamp(mass / 10.0, 0.2, 3.0)  # Entre 0.2 y 3.0
+			
+			# 5. Calcular impulso con límite máximo
+			var raw_impulse = direction * push_force * speed * mass_factor
+			var max_impulse = 8.0  # Límite máximo de fuerza
+			var impulse = raw_impulse.limit_length(max_impulse)
+			
+			# 6. Punto de aplicación: ligeramente arriba del centro para que no se atasque
+			var push_point = collider.global_position + Vector3.UP * 0.3
+			
+			collider.apply_impulse(impulse, push_point - collider.global_position)
 
 func handle_landing_effects():
 	# Efectos de aterrizaje (cámara, partículas)
 	pass
+
+func get_horizontal_speed() -> float:
+	return Vector3(velocity.x, 0, velocity.z).length()
