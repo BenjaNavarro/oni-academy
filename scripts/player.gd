@@ -16,7 +16,7 @@ extends CharacterBody3D
 @export var double_tap_window = 0.3
 
 # --- SALTO PROTOTYPE ---
-@export var jump_base_force = 2.5
+@export var jump_base_force = 2.0
 @export var air_control = 0.3
 @export var long_jump_boost = 5.0
 @export var bunny_hop_boost = 2.0
@@ -94,20 +94,23 @@ func _ready():
 		stamina = max_stamina
 
 func _input(event):
-	# Cámara
+	# --- CÁMARA ---
 	if event is InputEventMouseMotion:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera_mount.rotate_x(-event.relative.y * mouse_sensitivity)
 		camera_mount.rotation.x = clamp(camera_mount.rotation.x, -1.2, 1.2)
 	
-	# Dash (doble Shift)
+	# --- DASH (doble Shift) ---
 	if event.is_action_pressed("sprint"):
 		var current_time = Time.get_ticks_msec() / 1000.0
+		
 		if current_time - last_sprint_tap < double_tap_window and dash_cooldown <= 0:
-			start_dash()
+			if is_on_floor():
+				start_dash()
+		
 		last_sprint_tap = current_time
 	
-	# Crouch (mantener, estilo Source)
+	# --- CROUCH ---
 	if event.is_action_pressed("crouch"):
 		is_crouching = true
 		apply_crouch(true)
@@ -118,9 +121,31 @@ func _input(event):
 		else:
 			wants_uncrouch = true
 	
-	# --- BUNNY HOP: Detectar pulsación de salto ---
+	# --- SALTO / BUNNY HOP ---
 	if event.is_action_pressed("jump"):
 		try_bunny_hop()
+
+func start_dash():
+	# Guarda: si no estamos en el suelo, no hacemos nada
+	if not is_on_floor():
+		return
+	
+	is_dashing = true
+	dash_timer = dash_duration
+	dash_cooldown = dash_cooldown_max
+	
+	# Romper bunny hop al dashear
+	bhop_speed_bonus = 0.0
+	bhop_chain_count = 0
+	
+	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	var dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+	if dir == Vector3.ZERO:
+		dir = -transform.basis.z
+	
+	velocity.x = dir.x * dash_speed
+	velocity.z = dir.z * dash_speed
+	velocity.y = 0  # Dash puramente horizontal en el suelo
 
 func _physics_process(delta):
 	# Timers
@@ -154,7 +179,9 @@ func _physics_process(delta):
 	# Estados y movimiento
 	handle_states(delta)
 	handle_jump_charge(delta)
-	handle_movement_logic(delta)
+	# handle_movement_logic(delta)
+	if not is_dashing:
+		handle_movement_logic(delta)
 	
 	# Físicas
 	move_and_slide()
@@ -277,7 +304,6 @@ func execute_bunny_hop(timing: String):
 	is_crouch_jumping = false
 
 func play_bhop_feedback(timing: String):
-	# Referencia segura a la cámara (usamos la ruta correcta)
 	var cam = $camera_mount/Camera3D
 	
 	if timing == "perfect" and cam != null:
@@ -285,19 +311,13 @@ func play_bhop_feedback(timing: String):
 		fov_tween.tween_property(cam, "fov", 85 + (bhop_chain_count * 2), 0.1)
 		fov_tween.tween_property(cam, "fov", 75, 0.3)
 	
-	# Visual: pequeño impulso de cámara hacia abajo (feel de "rebote")
 	if camera_mount != null:
 		var cam_bump = create_tween()
 		var start_y = camera_mount.position.y
 		var target_y = 1.5 if not is_crouching else 0.8
 		
 		cam_bump.tween_property(camera_mount, "position:y", start_y - 0.1, 0.05)
-		cam_bump.tween_property(camera_mount, "position:y", target_y, 0.1)
-	
-	# Visual: pequeño impulso de cámara hacia abajo (feel de "rebote")
-	var cam_bump = create_tween()
-	cam_bump.tween_property(camera_mount, "position:y", camera_mount.position.y - 0.1, 0.05)
-	cam_bump.tween_property(camera_mount, "position:y", 1.5 if not is_crouching else 0.8, 0.1)
+		cam_bump.tween_property(camera_mount, "position:y", target_y, 0.1)  # ← DESCOMENTA ESTA
 
 # =============================================================================
 # SALTO NORMAL / CARGA (Prototype)
@@ -424,27 +444,6 @@ func handle_movement_logic(delta):
 		if direction:
 			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * 5.0)
 			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * 5.0)
-# =============================================================================
-# DASH
-# =============================================================================
-func start_dash():
-	is_dashing = true
-	dash_timer = dash_duration
-	dash_cooldown = dash_cooldown_max
-	
-	# Romper bunny hop al dashear
-	bhop_speed_bonus = 0.0
-	bhop_chain_count = 0
-	
-	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	var dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
-	if dir == Vector3.ZERO:
-		dir = -transform.basis.z
-	
-	velocity.x = dir.x * dash_speed
-	velocity.z = dir.z * dash_speed
-	if is_on_floor():
-		velocity.y = 0
 
 # =============================================================================
 # CROUCH & CROUCH JUMP
