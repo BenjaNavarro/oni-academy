@@ -32,6 +32,19 @@ extends CharacterBody3D
 @export var bhop_momentum_decay: float = 4.0    # Pérdida de velocidad extra por segundo en suelo
 @export var bhop_min_chain_for_boost: int = 2   # Saltos seguidos necesarios para sentir el boost
 
+# --- BUNNY HOP: UMBRALES DE DIRECCIÓN (antes "magic numbers") ---
+@export_group("Bhop Direction Tuning")
+@export var bhop_forward_threshold_full: float = 0.7    # A partir de aquí se considera "adelante pleno"
+@export var bhop_forward_threshold_partial: float = 0.3 # A partir de aquí se considera "adelante parcial"
+@export var bhop_backward_threshold: float = -0.2       # Por debajo de aquí se considera "hacia atrás"
+@export var bhop_perfect_timing_multiplier: float = 1.5 # Multiplicador de boost en timing "perfect"
+@export var bhop_partial_boost_factor: float = 0.4      # Fracción del boost cuando el forward es parcial
+@export var bhop_penalty_decay_multiplier: float = 5.0  # Qué tan rápido decae el bonus al ir atrás/lateral
+@export var bhop_partial_decay_multiplier: float = 2.0  # Qué tan rápido decae el bonus hacia el target parcial
+@export var bhop_partial_target_factor: float = 0.6     # A qué fracción del bonus actual converge en forward parcial
+@export var air_control_lerp_multiplier: float = 5.0    # Multiplicador del lerp de air control
+@export var ground_deceleration_multiplier: float = 2.0 # Qué tan rápido frena en el suelo sin input
+
 # --- STAMINA ---
 @export var max_stamina: float = 100.0
 @export var stamina_recover_rate: float = 8.0   # Por segundo
@@ -266,15 +279,15 @@ func execute_bunny_hop(timing: String):
 	
 	var boost = bhop_speed_increment
 	if timing == "perfect":
-		boost *= 1.5
+		boost *= bhop_perfect_timing_multiplier
 	
 	var bonus_to_add = 0.0
 	var had_bonus_before = bhop_speed_bonus > 0  # Guardamos si teníamos bonus antes
 	
-	if forward_amount > 0.7:
+	if forward_amount > bhop_forward_threshold_full:
 		bonus_to_add = boost
-	elif forward_amount > 0.3:
-		bonus_to_add = boost * 0.4
+	elif forward_amount > bhop_forward_threshold_partial:
+		bonus_to_add = boost * bhop_partial_boost_factor
 	else:
 		# Lateral o atrás: resetear bonus
 		bonus_to_add = 0.0
@@ -289,7 +302,7 @@ func execute_bunny_hop(timing: String):
 		move_dir = -transform.basis.z
 	
 	var target_speed = speed_base
-	if forward_amount > 0.3:
+	if forward_amount > bhop_forward_threshold_partial:
 		target_speed += bhop_speed_bonus
 	
 	velocity.x = move_dir.x * target_speed
@@ -298,7 +311,7 @@ func execute_bunny_hop(timing: String):
 	
 	# --- FEEDBACK: solo si hay bonus real ---
 	# Si acumulamos bonus nuevo O ya teníamos bonus y seguimos yendo adelante/diagonal
-	if bonus_to_add > 0 or (had_bonus_before and forward_amount > 0.3):
+	if bonus_to_add > 0 or (had_bonus_before and forward_amount > bhop_forward_threshold_partial):
 		play_bhop_feedback(timing)
 	
 	is_crouch_jumping = false
@@ -398,22 +411,22 @@ func handle_movement_logic(delta):
 	
 	# --- PENALIZACIÓN DE BONUS BHOP ---
 	if bhop_speed_bonus > 0:
-		if forward_amount < -0.2:
-			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
+		if forward_amount < bhop_backward_threshold:
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * bhop_penalty_decay_multiplier)
 			if bhop_speed_bonus < 0.5:
 				bhop_speed_bonus = 0.0
-		elif forward_amount < 0.3:
-			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * 5.0)
+		elif forward_amount < bhop_forward_threshold_partial:
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta * bhop_penalty_decay_multiplier)
 			if bhop_speed_bonus < 0.5:
 				bhop_speed_bonus = 0.0
-		elif forward_amount < 0.7:
-			var target_bonus = bhop_speed_bonus * 0.6
-			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * 2.0)
+		elif forward_amount < bhop_forward_threshold_full:
+			var target_bonus = bhop_speed_bonus * bhop_partial_target_factor
+			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * bhop_partial_decay_multiplier)
 	
 	# --- BHOP EN EL AIRE ---
 	if bhop_speed_bonus > 0 and not is_on_floor():
 		var target_speed = speed_base
-		if forward_amount > 0.3:
+		if forward_amount > bhop_forward_threshold_partial:
 			target_speed += bhop_speed_bonus
 		
 		if direction != Vector3.ZERO:
@@ -437,13 +450,13 @@ func handle_movement_logic(delta):
 			velocity.x = direction.x * current_speed
 			velocity.z = direction.z * current_speed
 		else:
-			velocity.x = move_toward(velocity.x, 0, current_speed * 2.0 * delta)
-			velocity.z = move_toward(velocity.z, 0, current_speed * 2.0 * delta)
+			velocity.x = move_toward(velocity.x, 0, current_speed * ground_deceleration_multiplier * delta)
+			velocity.z = move_toward(velocity.z, 0, current_speed * ground_deceleration_multiplier * delta)
 	else:
 		# Air control normal
 		if direction:
-			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * 5.0)
-			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * 5.0)
+			velocity.x = lerp(velocity.x, direction.x * current_speed, air_control * delta * air_control_lerp_multiplier)
+			velocity.z = lerp(velocity.z, direction.z * current_speed, air_control * delta * air_control_lerp_multiplier)
 
 # =============================================================================
 # CROUCH & CROUCH JUMP
