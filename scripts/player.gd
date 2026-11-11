@@ -26,8 +26,8 @@ extends CharacterBody3D
 @export var bhop_enabled: bool = true
 @export var bhop_window_perfect: float = 0.12   # Timing perfecto al aterrizar
 @export var bhop_window_good: float = 0.22      # Timing aceptable
-@export var bhop_speed_increment: float = 1.5   # Cuánto suma cada hop exitoso
-@export var bhop_max_speed: float = 18.0        # Velocidad tope (evita volverse loco)
+@export var bhop_speed_increment: float = 1.0   # Cuánto suma cada hop exitoso (crecimiento progresivo)
+@export var bhop_max_speed: float = 9.5         # Velocidad tope controlada (evita salir disparado)
 @export var bhop_stamina_cost: float = 12.0     # Stamina consumida por hop
 @export var bhop_momentum_decay: float = 4.0    # Pérdida de velocidad extra por segundo en suelo
 @export var bhop_min_chain_for_boost: int = 2   # Saltos seguidos necesarios para sentir el boost
@@ -54,6 +54,11 @@ extends CharacterBody3D
 @onready var collision_shape = $CollisionShape3D
 @onready var visuals = $visuals
 @onready var camera_mount = $camera_mount
+@onready var animation_tree: AnimationTree = get_node_or_null("AnimationTree")
+
+# --- JEDI SPRINT & ANIMACIÓN ---
+var is_jedi_sprinting: bool = false
+var anim_speed_scale: float = 1.0
 
 # --- VARIABLES DE ESTADO ---
 var is_crouching = false
@@ -92,14 +97,14 @@ var wants_uncrouch = false
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	default_height = collision_shape.shape.height
-	
+
 	# DEBUG: Ver qué valores tiene REALMENTE al iniciar
 	print("=== VALORES INICIALES ===")
 	print("speed_base (script): ", speed_base)
 	print("speed_run (script): ", speed_run)
 	print("crouch_speed: ", crouch_speed)
 	print("=========================")
-	
+
 	if profile:
 		speed_base = profile.walk_speed
 		print("PROFILE ACTIVO: walk_speed = ", profile.walk_speed)
@@ -112,17 +117,17 @@ func _input(event):
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera_mount.rotate_x(-event.relative.y * mouse_sensitivity)
 		camera_mount.rotation.x = clamp(camera_mount.rotation.x, -1.2, 1.2)
-	
+
 	# --- DASH (doble Shift) ---
 	if event.is_action_pressed("sprint"):
 		var current_time = Time.get_ticks_msec() / 1000.0
-		
+
 		if current_time - last_sprint_tap < double_tap_window and dash_cooldown <= 0:
 			if is_on_floor():
 				start_dash()
-		
+
 		last_sprint_tap = current_time
-	
+
 	# --- CROUCH ---
 	if event.is_action_pressed("crouch"):
 		is_crouching = true
@@ -133,7 +138,7 @@ func _input(event):
 			apply_crouch(false)
 		else:
 			wants_uncrouch = true
-	
+
 	# --- SALTO / BUNNY HOP ---
 	if event.is_action_pressed("jump"):
 		try_bunny_hop()
@@ -142,20 +147,20 @@ func start_dash():
 	# Guarda: si no estamos en el suelo, no hacemos nada
 	if not is_on_floor():
 		return
-	
+
 	is_dashing = true
 	dash_timer = dash_duration
 	dash_cooldown = dash_cooldown_max
-	
+
 	# Romper bunny hop al dashear
 	bhop_speed_bonus = 0.0
 	bhop_chain_count = 0
-	
+
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	if dir == Vector3.ZERO:
 		dir = -transform.basis.z
-	
+
 	velocity.x = dir.x * dash_speed
 	velocity.z = dir.z * dash_speed
 	velocity.y = 0  # Dash puramente horizontal en el suelo
@@ -166,20 +171,20 @@ func _physics_process(delta):
 	else: is_dashing = false
 	if dash_cooldown > 0: dash_cooldown -= delta
 	if jump_cooldown > 0: jump_cooldown -= delta
-	
+
 	# Stamina recovery
 	if stamina_recover_timer > 0:
 		stamina_recover_timer -= delta
 	else:
 		stamina = min(stamina + stamina_recover_rate * delta, max_stamina)
-	
+
 	# Gravedad
 	if not is_on_floor():
 		velocity += get_gravity() * delta
-	
+
 	# Detectar aterrizaje para ventana de Bunny Hop
 	handle_landing_detection(delta)
-	
+
 	# Si queríamos levantarnos y ahora hay espacio
 	if wants_uncrouch and is_crouching and can_uncrouch():
 		is_crouching = false
@@ -188,18 +193,27 @@ func _physics_process(delta):
 		if not is_on_floor() and is_crouch_jumping:
 			velocity.y += crouch_jump_boost
 			is_crouch_jumping = false
-	
+
 	# Estados y movimiento
 	handle_states(delta)
 	handle_jump_charge(delta)
 	# handle_movement_logic(delta)
 	if not is_dashing:
 		handle_movement_logic(delta)
-	
+
+	# Limitar velocidad horizontal máxima para evitar salir disparado (excepto durante dash)
+	if not is_dashing:
+		var h_vel = Vector2(velocity.x, velocity.z)
+		if h_vel.length() > bhop_max_speed:
+			h_vel = h_vel.normalized() * bhop_max_speed
+			velocity.x = h_vel.x
+			velocity.z = h_vel.y
+
 	# Físicas
 	move_and_slide()
 	handle_box_pushing()
 	handle_landing_effects()
+	update_animation_parameters(delta)
 
 # =============================================================================
 # BUNNY HOP SYSTEM
@@ -208,45 +222,45 @@ func _physics_process(delta):
 func handle_landing_detection(delta):
 	# Detectar transición AIRE → SUELO
 	var is_in_air = not is_on_floor()
-	
+
 	if was_in_air and not is_in_air:
 		# Acabamos de aterrizar → Abrir ventana de Bunny Hop
 		time_since_landed = 0.0
 		bhop_window_active = true
-	
+
 	if is_on_floor():
 		time_since_landed += delta
-		
+
 		# La ventana se cierra después del timing "good"
 		if time_since_landed > bhop_window_good:
 			bhop_window_active = false
-			
+
 			# Si estamos en el suelo y no hacemos bhop, perdemos momentum
 			if bhop_speed_bonus > 0:
 				bhop_speed_bonus = move_toward(bhop_speed_bonus, 0.0, bhop_momentum_decay * delta)
 				if bhop_speed_bonus < 0.5:
 					bhop_speed_bonus = 0.0
 					bhop_chain_count = 0
-	
+
 	was_in_air = is_in_air
 
 func try_bunny_hop():
 	# Bunny Hop requiere: Shift presionado + timing correcto + stamina + no agachado
 	var is_sprint_held = Input.is_action_pressed("sprint")
-	
+
 	if not bhop_enabled or is_crouching or not is_sprint_held:
 		# No intentamos bhop, salto normal/carga
 		handle_normal_jump_start()
 		return
-	
+
 	if stamina < bhop_stamina_cost:
 		# Sin stamina: salto normal sin boost
 		handle_normal_jump_start()
 		return
-	
+
 	# Evaluar timing
 	var timing = get_bhop_timing()
-	
+
 	if timing == "perfect" or timing == "good":
 		# ¡BUNNY HOP EXITOSO!
 		execute_bunny_hop(timing)
@@ -269,21 +283,21 @@ func execute_bunny_hop(timing: String):
 	# Consumir stamina
 	stamina -= bhop_stamina_cost
 	stamina_recover_timer = stamina_recover_delay
-	
+
 	# La cadena SIEMPRE sube si el timing fue bueno
 	bhop_chain_count += 1
-	
+
 	# --- BONUS DE VELOCIDAD: solo hacia adelante ---
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var forward_amount = -input_dir.y
-	
+
 	var boost = bhop_speed_increment
 	if timing == "perfect":
 		boost *= bhop_perfect_timing_multiplier
-	
+
 	var bonus_to_add = 0.0
 	var had_bonus_before = bhop_speed_bonus > 0  # Guardamos si teníamos bonus antes
-	
+
 	if forward_amount > bhop_forward_threshold_full:
 		bonus_to_add = boost
 	elif forward_amount > bhop_forward_threshold_partial:
@@ -292,43 +306,45 @@ func execute_bunny_hop(timing: String):
 		# Lateral o atrás: resetear bonus
 		bonus_to_add = 0.0
 		bhop_speed_bonus = 0.0
-	
+
+	var base_bhop_speed = speed_run if Input.is_action_pressed("sprint") else speed_base
 	if bonus_to_add > 0:
-		bhop_speed_bonus = min(bhop_speed_bonus + bonus_to_add, bhop_max_speed - speed_base)
-	
+		bhop_speed_bonus = min(bhop_speed_bonus + bonus_to_add, max(0.0, bhop_max_speed - base_bhop_speed))
+
 	# --- DIRECCIÓN DEL SALTO ---
 	var move_dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	if move_dir == Vector3.ZERO:
 		move_dir = -transform.basis.z
-	
-	var target_speed = speed_base
+
+	var target_speed = base_bhop_speed
 	if forward_amount > bhop_forward_threshold_partial:
 		target_speed += bhop_speed_bonus
-	
+	target_speed = min(target_speed, bhop_max_speed)
+
 	velocity.x = move_dir.x * target_speed
 	velocity.z = move_dir.z * target_speed
 	velocity.y = jump_base_force * 0.85
-	
+
 	# --- FEEDBACK: solo si hay bonus real ---
 	# Si acumulamos bonus nuevo O ya teníamos bonus y seguimos yendo adelante/diagonal
 	if bonus_to_add > 0 or (had_bonus_before and forward_amount > bhop_forward_threshold_partial):
 		play_bhop_feedback(timing)
-	
+
 	is_crouch_jumping = false
 
 func play_bhop_feedback(timing: String):
 	var cam = $camera_mount/Camera3D
-	
+
 	if timing == "perfect" and cam != null:
 		var fov_tween = create_tween()
 		fov_tween.tween_property(cam, "fov", 85 + (bhop_chain_count * 2), 0.1)
 		fov_tween.tween_property(cam, "fov", 75, 0.3)
-	
+
 	if camera_mount != null:
 		var cam_bump = create_tween()
 		var start_y = camera_mount.position.y
 		var target_y = 1.5 if not is_crouching else 0.8
-		
+
 		cam_bump.tween_property(camera_mount, "position:y", start_y - 0.1, 0.05)
 		cam_bump.tween_property(camera_mount, "position:y", target_y, 0.1)  # ← DESCOMENTA ESTA
 
@@ -344,7 +360,7 @@ func handle_normal_jump_start():
 			is_crouch_jumping = true
 			velocity.y = jump_base_force * 0.9
 			return
-		
+
 		is_charging = true
 		jump_charge = 0.0
 		# Visual: agacharse al cargar
@@ -354,7 +370,7 @@ func handle_normal_jump_start():
 func handle_jump_charge(delta):
 	if not is_charging:
 		return
-	
+
 	if is_on_floor() and Input.is_action_pressed("jump"):
 		jump_charge += delta * 1.5
 		jump_charge = min(jump_charge, max_jump_charge)
@@ -370,14 +386,14 @@ func handle_jump_charge(delta):
 func release_jump_charge():
 	is_charging = false
 	var charge_ratio = jump_charge / max_jump_charge
-	
+
 	# Calcular fuerza
 	var force = jump_base_force + (charge_ratio * 3.0)
-	
+
 	# Long jump (si el perfil lo permite)
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var is_moving_forward = input_dir.y < -0.5
-	
+
 	if profile and profile.can_long_jump and is_moving_forward and charge_ratio > 0.5:
 		var horizontal = profile.long_jump_force * charge_ratio
 		var h_vel = Vector3(velocity.x, 0, velocity.z)
@@ -388,7 +404,7 @@ func release_jump_charge():
 		velocity.y = force * 0.6
 	else:
 		velocity.y = force
-	
+
 	jump_charge = 0.0
 	var reset_tween = create_tween()
 	reset_tween.tween_property(visuals, "position:y", 0.0, 0.1)
@@ -408,7 +424,7 @@ func handle_movement_logic(delta):
 	var input_dir = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	var forward_amount = -input_dir.y
-	
+
 	# --- PENALIZACIÓN DE BONUS BHOP ---
 	if bhop_speed_bonus > 0:
 		if forward_amount < bhop_backward_threshold:
@@ -422,13 +438,15 @@ func handle_movement_logic(delta):
 		elif forward_amount < bhop_forward_threshold_full:
 			var target_bonus = bhop_speed_bonus * bhop_partial_target_factor
 			bhop_speed_bonus = move_toward(bhop_speed_bonus, target_bonus, bhop_momentum_decay * delta * bhop_partial_decay_multiplier)
-	
+
 	# --- BHOP EN EL AIRE ---
 	if bhop_speed_bonus > 0 and not is_on_floor():
-		var target_speed = speed_base
+		var base_bhop_speed = speed_run if Input.is_action_pressed("sprint") else speed_base
+		var target_speed = base_bhop_speed
 		if forward_amount > bhop_forward_threshold_partial:
 			target_speed += bhop_speed_bonus
-		
+		target_speed = min(target_speed, bhop_max_speed)
+
 		if direction != Vector3.ZERO:
 			velocity.x = direction.x * target_speed
 			velocity.z = direction.z * target_speed
@@ -436,15 +454,15 @@ func handle_movement_logic(delta):
 			velocity.x = move_toward(velocity.x, 0, bhop_momentum_decay * delta)
 			velocity.z = move_toward(velocity.z, 0, bhop_momentum_decay * delta)
 		return
-	
+
 	# --- MOVIMIENTO EN EL SUELO ---
 	var current_speed = speed_base
-	
+
 	if is_crouching:
 		current_speed = crouch_speed
 	elif Input.is_action_pressed("sprint") and is_on_floor():
 		current_speed = speed_run
-	
+
 	if is_on_floor():
 		if direction:
 			velocity.x = direction.x * current_speed
@@ -466,7 +484,7 @@ func apply_crouch(crouched: bool):
 	var target_height = crouch_height if crouched else default_height
 	var target_pos = 0.5 if crouched else 1.0
 	var cam_y = 0.8 if crouched else 1.5
-	
+
 	var tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE)
 	tween.tween_property(collision_shape.shape, "height", target_height, 0.1)
 	tween.tween_property(collision_shape, "position:y", target_pos, 0.1)
@@ -490,32 +508,32 @@ func handle_box_pushing():
 	for i in get_slide_collision_count():
 		var collision = get_slide_collision(i)
 		var collider = collision.get_collider()
-		
+
 		if collider is RigidBody3D:
 			# 1. Solo empujar con velocidad horizontal (ignorar caídas verticales)
 			var horizontal_vel = Vector3(velocity.x, 0, velocity.z)
 			var speed = horizontal_vel.length()
-			
+
 			# 2. Si no hay movimiento horizontal, no empujar
 			if speed < 0.5:
 				continue
-			
+
 			# 3. Dirección del empuje: la normal de la colisión
 			var direction = -collision.get_normal()
-			
+
 			# 4. Factor de masa: cajas ligeras reciben menos impulso bruto
 			# (evita que una caja de 1kg se vaya al infinito)
 			var mass = collider.mass
 			var mass_factor = clamp(mass / 10.0, 0.2, 3.0)  # Entre 0.2 y 3.0
-			
+
 			# 5. Calcular impulso con límite máximo
 			var raw_impulse = direction * push_force * speed * mass_factor
 			var max_impulse = 8.0  # Límite máximo de fuerza
 			var impulse = raw_impulse.limit_length(max_impulse)
-			
+
 			# 6. Punto de aplicación: ligeramente arriba del centro para que no se atasque
 			var push_point = collider.global_position + Vector3.UP * 0.3
-			
+
 			collider.apply_impulse(impulse, push_point - collider.global_position)
 
 func handle_landing_effects():
@@ -524,3 +542,43 @@ func handle_landing_effects():
 
 func get_horizontal_speed() -> float:
 	return Vector3(velocity.x, 0, velocity.z).length()
+
+# =============================================================================
+# ANIMACIÓN & TIMING JEDI SPRINT
+# =============================================================================
+
+func update_animation_parameters(_delta: float):
+	var h_speed = get_horizontal_speed()
+
+	# Condición para Jedi Sprint:
+	# Requiere cadena mínima de bhop y haber superado la velocidad de carrera estándar
+	var should_jedi_sprint = bhop_chain_count >= bhop_min_chain_for_boost and h_speed > (speed_run + 0.2)
+	is_jedi_sprinting = should_jedi_sprint
+
+	# Escala de velocidad de reproducción (TimeScale) para sincronizar pasos con velocidad real:
+	# A speed_run (5.0) -> escala 1.0
+	# A bhop_max_speed (9.5) -> escala ~1.6
+	if speed_run > 0.0:
+		anim_speed_scale = clamp(h_speed / speed_run, 0.8, 1.8)
+	else:
+		anim_speed_scale = 1.0
+
+	# Si existe AnimationTree configurado, sincronizamos parámetros de forma segura
+	if animation_tree and animation_tree.active:
+		set_anim_param("parameters/conditions/is_jedi_sprint", is_jedi_sprinting)
+		set_anim_param("parameters/conditions/is_running", h_speed > speed_base and not is_jedi_sprinting)
+		set_anim_param("parameters/conditions/is_idle", h_speed < 0.1)
+		set_anim_param("parameters/conditions/is_on_floor", is_on_floor())
+		set_anim_param("parameters/conditions/is_in_air", not is_on_floor())
+
+		# TimeScale para acelerar la animación orgánicamente
+		set_anim_param("parameters/SprintTimeScale/scale", anim_speed_scale)
+		set_anim_param("parameters/TimeScale/scale", anim_speed_scale)
+
+		# Factor de mezcla (0.0 = run normal, 1.0 = sprint máximo)
+		var blend_factor = clamp((h_speed - speed_run) / max(0.1, bhop_max_speed - speed_run), 0.0, 1.0)
+		set_anim_param("parameters/blend_sprint", blend_factor)
+
+func set_anim_param(param_path: String, value: Variant):
+	if animation_tree and param_path in animation_tree:
+		animation_tree.set(param_path, value)
