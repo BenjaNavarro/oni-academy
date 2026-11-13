@@ -25,10 +25,11 @@ transform = Transform3D(-0.99999845, 0, -0.0017627786, 0, 1, 0, 0.0017627786, 0,
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
 
 [node name="Camera3D" type="Camera3D" parent="camera_mount" unique_id=921479968]
-transform = Transform3D(0.9548832, 0.09274262, -0.28212926, 0.025337864, 0.92108357, 0.38853964, 0.29589882, -0.37815854, 0.87717736, 0.4032383, 0.51453125, 1.1329277)
+transform = Transform3D(1, 0, 0, 0, 0.98, 0.2, 0, -0.2, 0.98, 0, 0.25, 4.0)
 current = true
 
 [node name="AnimationTree" type="AnimationTree" parent="." unique_id=1158770008]
+active = false
 root_node = NodePath("../visuals/mixamo_base")
 tree_root = SubResource("AnimationNodeStateMachine_g2els")
 anim_player = NodePath("../visuals/mixamo_base/AnimationPlayer")

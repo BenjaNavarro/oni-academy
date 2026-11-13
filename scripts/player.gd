@@ -1,5 +1,7 @@
 extends CharacterBody3D
 
+const CHARACTER_POSES: AnimationLibrary = preload("res://assets/animations/character_poses.tres")
+
 # --- PERFIL DEL PERSONAJE ---
 @export var profile: CharacterProfile
 
@@ -55,10 +57,12 @@ extends CharacterBody3D
 @onready var visuals = $visuals
 @onready var camera_mount = $camera_mount
 @onready var animation_tree: AnimationTree = get_node_or_null("AnimationTree")
+@onready var animation_player: AnimationPlayer = get_node_or_null("visuals/mixamo_base/AnimationPlayer")
 
 # --- JEDI SPRINT & ANIMACIÓN ---
 var is_jedi_sprinting: bool = false
 var anim_speed_scale: float = 1.0
+var active_model_animation: String = ""
 
 # --- VARIABLES DE ESTADO ---
 var is_crouching = false
@@ -97,6 +101,7 @@ var wants_uncrouch = false
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	default_height = collision_shape.shape.height
+	_setup_character_animations()
 
 	# DEBUG: Ver qué valores tiene REALMENTE al iniciar
 	print("=== VALORES INICIALES ===")
@@ -130,10 +135,12 @@ func _input(event):
 
 	# --- CROUCH ---
 	if event.is_action_pressed("crouch"):
+		wants_uncrouch = false
 		is_crouching = true
 		apply_crouch(true)
 	elif event.is_action_released("crouch"):
 		if can_uncrouch():
+			wants_uncrouch = false
 			is_crouching = false
 			apply_crouch(false)
 		else:
@@ -363,9 +370,7 @@ func handle_normal_jump_start():
 
 		is_charging = true
 		jump_charge = 0.0
-		# Visual: agacharse al cargar
-		var charge_tween = create_tween()
-		charge_tween.tween_property(visuals, "position:y", -0.15, 0.1)
+		# La preparación del salto usa la pose de agachado del esqueleto.
 
 func handle_jump_charge(delta):
 	if not is_charging:
@@ -380,8 +385,6 @@ func handle_jump_charge(delta):
 		# Si se cancela (ej: caída, stun)
 		is_charging = false
 		jump_charge = 0.0
-		var reset_tween = create_tween()
-		reset_tween.tween_property(visuals, "position:y", 0.0, 0.1)
 
 func release_jump_charge():
 	is_charging = false
@@ -406,8 +409,6 @@ func release_jump_charge():
 		velocity.y = force
 
 	jump_charge = 0.0
-	var reset_tween = create_tween()
-	reset_tween.tween_property(visuals, "position:y", 0.0, 0.1)
 
 # =============================================================================
 # MOVIMIENTO
@@ -552,7 +553,7 @@ func update_animation_parameters(_delta: float):
 
 	# Condición para Jedi Sprint:
 	# Requiere cadena mínima de bhop y haber superado la velocidad de carrera estándar
-	var should_jedi_sprint = bhop_chain_count >= bhop_min_chain_for_boost and h_speed > (speed_run + 0.2)
+	var should_jedi_sprint = bhop_chain_count >= bhop_min_chain_for_boost and h_speed > (speed_run + 0.2) and not is_crouching and not is_charging and not is_dashing
 	is_jedi_sprinting = should_jedi_sprint
 
 	# Escala de velocidad de reproducción (TimeScale) para sincronizar pasos con velocidad real:
@@ -562,6 +563,8 @@ func update_animation_parameters(_delta: float):
 		anim_speed_scale = clamp(h_speed / speed_run, 0.8, 1.8)
 	else:
 		anim_speed_scale = 1.0
+	# Elegir el clip después de calcular el estado y la cadencia de este frame.
+	_update_model_animation(h_speed)
 
 	# Si existe AnimationTree configurado, sincronizamos parámetros de forma segura
 	if animation_tree and animation_tree.active:
@@ -582,3 +585,62 @@ func update_animation_parameters(_delta: float):
 func set_anim_param(param_path: String, value: Variant):
 	if animation_tree and param_path in animation_tree:
 		animation_tree.set(param_path, value)
+
+func _setup_character_animations() -> void:
+	if animation_player == null:
+		return
+	# El árbol vacío también escribe poses: dejar un solo controlador del esqueleto.
+	if animation_tree:
+		animation_tree.active = false
+	var runtime_library := AnimationLibrary.new()
+	var source_library := animation_player.get_animation_library("")
+	if source_library == null:
+		return
+	for clip_name in ["idle", "walking", "running"]:
+		if not source_library.has_animation(clip_name):
+			continue
+		var clip: Animation = source_library.get_animation(clip_name).duplicate()
+		clip.loop_mode = Animation.LOOP_LINEAR
+		runtime_library.add_animation(clip_name, clip)
+	for clip_name in CHARACTER_POSES.get_animation_list():
+		runtime_library.add_animation(clip_name, CHARACTER_POSES.get_animation(clip_name))
+	if not runtime_library.get_animation_list().is_empty():
+		if animation_player.has_animation_library("runtime"):
+			animation_player.remove_animation_library("runtime")
+		animation_player.add_animation_library("runtime", runtime_library)
+
+func _update_model_animation(h_speed: float) -> void:
+	if animation_player == null or not animation_player.has_animation_library("runtime"):
+		return
+	var clip_name := "idle"
+	# Dash y sprint Jedi tienen prioridad; este último también acompaña los bhops.
+	if is_dashing:
+		clip_name = "dash"
+	elif is_jedi_sprinting:
+		clip_name = "jedi_sprint"
+	elif not is_on_floor():
+		clip_name = "jump" if velocity.y > 0.15 else "fall"
+	elif is_crouching or is_charging:
+		clip_name = "crouch_walk" if is_crouching and h_speed > 0.1 else "crouched"
+	elif h_speed > 0.1:
+		clip_name = "running" if Input.is_action_pressed("sprint") else "walking"
+	var animation_name := "runtime/" + clip_name
+	if active_model_animation != animation_name:
+		# Un dash dura 0.2 s: la entrada debe ser más corta que la de locomoción.
+		var blend_time := 0.025 if clip_name == "dash" else (0.10 if clip_name in ["jump", "fall"] else 0.15)
+		animation_player.play(animation_name, blend_time)
+		active_model_animation = animation_name
+	if clip_name == "dash":
+		# Sincronizar el clip con la duración configurable del impulso físico.
+		animation_player.speed_scale = animation_player.get_animation(animation_name).length / maxf(dash_duration, 0.01)
+		return
+	if clip_name == "jedi_sprint":
+		animation_player.speed_scale = anim_speed_scale
+		return
+	# El salto no se reinicia al terminar: mantiene la última pose hasta caer.
+	var target_speed: float = speed_base
+	if clip_name == "running":
+		target_speed = speed_run
+	elif clip_name == "crouch_walk":
+		target_speed = crouch_speed
+	animation_player.speed_scale = clamp(h_speed / max(target_speed, 0.1), 0.75, 1.8) if clip_name in ["walking", "running", "crouch_walk"] else 1.0

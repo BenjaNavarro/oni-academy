@@ -17,4 +17,4 @@ class_name CharacterProfile
 @export var long_jump_force: float = 0.0
 
 # Stamina
-@export var max_stamina: float = 100.0
+@export var max_swwwdsawdsadwadsadwatamina: float = 100.0
